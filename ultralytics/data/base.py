@@ -208,7 +208,9 @@ class BaseDataset(Dataset):
                 if keypoints is not None:
                     self.labels[i]["keypoints"] = keypoints[j]
             if self.single_cls:
-                if self.labels[i]["cls"].ndim == 1 or self.labels[i]["cls"].shape[1] == 1:
+                if self.labels[i]["cls"].ndim == 1:
+                    self.labels[i]["cls"][:] = 0
+                elif self.labels[i]["cls"].shape[1] == 1:
                     self.labels[i]["cls"][:, 0] = 0
                 else:
                     self.labels[i]["cls"] = np.zeros_like(self.labels[i]["cls"])
