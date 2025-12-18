@@ -2214,7 +2214,14 @@ class LoadVisualPrompt:
             bboxes = labels["bboxes"]
             bboxes = xywh2xyxy(bboxes) * torch.tensor(imgsz)[[1, 0, 1, 0]]  # denormalize boxes
 
-        cls = labels["cls"].squeeze(-1).to(torch.int)
+        # Handle both single-label (N, 1) and multi-label (N, C) formats
+        cls_tensor = labels["cls"]
+        if cls_tensor.ndim > 1 and cls_tensor.shape[1] > 1:
+            # Multi-label format: convert multi-hot to class indices using argmax
+            cls = cls_tensor.argmax(dim=1).to(torch.int)
+        else:
+            # Single-label format: squeeze and convert to int
+            cls = cls_tensor.squeeze(-1).to(torch.int)
         visuals = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
         labels["visuals"] = visuals
         return labels
