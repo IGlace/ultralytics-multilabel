@@ -126,7 +126,10 @@ class OBBValidator(DetectionValidator):
             (dict[str, Any]): Prepared batch data with scaled bounding boxes and metadata.
         """
         idx = batch["batch_idx"] == si
-        cls = batch["cls"][idx].squeeze(-1)
+        cls = batch["cls"][idx]
+        # Only squeeze if single-label format (shape: N, 1), keep multi-label format (shape: N, C)
+        if cls.ndim > 1 and cls.shape[1] == 1:
+            cls = cls.squeeze(-1)
         bbox = batch["bboxes"][idx]
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
