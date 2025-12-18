@@ -448,7 +448,19 @@ class BaseMixTransform:
         text2id = {text: i for i, text in enumerate(mix_texts)}
 
         for label in [labels] + labels["mix_labels"]:
-            for i, cls in enumerate(label["cls"].squeeze(-1).tolist()):
+            cls_array = label["cls"]
+            # Handle both single-label (N, 1) and multi-label (N, C) formats
+            if hasattr(cls_array, "ndim") and cls_array.ndim > 1 and cls_array.shape[1] > 1:
+                # Multi-label format: convert multi-hot to class indices using argmax
+                if isinstance(cls_array, torch.Tensor):
+                    cls_list = cls_array.argmax(dim=1).tolist()
+                else:
+                    cls_list = cls_array.argmax(axis=1).tolist()
+            else:
+                # Single-label format: squeeze and convert to list
+                cls_list = cls_array.squeeze(-1).tolist()
+            
+            for i, cls in enumerate(cls_list):
                 text = label["texts"][int(cls)]
                 label["cls"][i] = text2id[tuple(text)]
             label["texts"] = mix_texts
@@ -2347,7 +2359,15 @@ class RandomLoadText:
         label2ids = {label: i for i, label in enumerate(sampled_labels)}
         valid_idx = np.zeros(len(labels["instances"]), dtype=bool)
         new_cls = []
-        for i, label in enumerate(cls.squeeze(-1).tolist()):
+        # Handle both single-label (N, 1) and multi-label (N, C) formats
+        if cls.ndim > 1 and cls.shape[1] > 1:
+            # Multi-label format: convert multi-hot to class indices using argmax
+            cls_list = cls.argmax(axis=1).tolist()
+        else:
+            # Single-label format: squeeze and convert to list
+            cls_list = cls.squeeze(-1).tolist()
+        
+        for i, label in enumerate(cls_list):
             if label not in label2ids:
                 continue
             valid_idx[i] = True
