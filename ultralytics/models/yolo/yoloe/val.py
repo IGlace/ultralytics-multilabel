@@ -71,7 +71,7 @@ class YOLOEDetectValidator(DetectionValidator):
 
         # Count samples per class
         for batch in dataloader:
-            cls = batch["cls"].squeeze(-1).to(torch.int)
+            cls = batch["cls"].flatten().to(torch.int)
             count = torch.bincount(cls, minlength=len(names))
             cls_visual_num += count
 
@@ -85,7 +85,7 @@ class YOLOEDetectValidator(DetectionValidator):
 
             batch_idx = batch["batch_idx"]
             for i in range(preds.shape[0]):
-                cls = batch["cls"][batch_idx == i].squeeze(-1).to(torch.int).unique(sorted=True)
+                cls = batch["cls"][batch_idx == i].flatten().to(torch.int).unique(sorted=True)
                 pad_cls = torch.ones(preds.shape[1], device=self.device) * -1
                 pad_cls[: cls.shape[0]] = cls
                 for c in cls:
