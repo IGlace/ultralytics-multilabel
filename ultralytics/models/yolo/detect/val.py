@@ -136,7 +136,10 @@ class DetectionValidator(BaseValidator):
             (dict[str, Any]): Prepared batch with processed annotations.
         """
         idx = batch["batch_idx"] == si
-        cls = batch["cls"][idx].squeeze(-1)
+        cls = batch["cls"][idx]
+        # Only squeeze if single-label format (shape: N, 1), keep multi-label format (shape: N, C)
+        if cls.ndim > 1 and cls.shape[1] == 1:
+            cls = cls.squeeze(-1)
         bbox = batch["bboxes"][idx]
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
@@ -179,11 +182,20 @@ class DetectionValidator(BaseValidator):
 
             cls = pbatch["cls"].cpu().numpy()
             no_pred = predn["cls"].shape[0] == 0
+            
+            # Handle both single-label (N,) and multi-label (N, C) formats
+            if cls.ndim > 1 and cls.shape[1] > 1:
+                # Multi-label format: extract unique class indices from multi-hot encoding
+                target_img = np.where(cls.sum(axis=0) > 0)[0]  # Classes present in the image
+            else:
+                # Single-label format
+                target_img = np.unique(cls)
+            
             self.metrics.update_stats(
                 {
                     **self._process_batch(predn, pbatch),
                     "target_cls": cls,
-                    "target_img": np.unique(cls),
+                    "target_img": target_img,
                     "conf": np.zeros(0) if no_pred else predn["conf"].cpu().numpy(),
                     "pred_cls": np.zeros(0) if no_pred else predn["cls"].cpu().numpy(),
                 }

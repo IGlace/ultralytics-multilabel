@@ -127,12 +127,23 @@ class YOLODataset(BaseDataset):
                 ne += ne_f
                 nc += nc_f
                 if im_file:
+                    num_classes = len(self.data["names"])
+                    # Detect if labels are in multi-label format (num_classes + 4 columns) or single-label (5 columns)
+                    if lb.shape[1] == (num_classes + 4):
+                        # Multi-label format: first num_classes columns are multi-hot encoded classes
+                        cls_data = lb[:, :num_classes]  # n, num_classes
+                        bbox_data = lb[:, num_classes:]  # n, 4
+                    else:
+                        # Single-label format: first column is class ID
+                        cls_data = lb[:, 0:1]  # n, 1
+                        bbox_data = lb[:, 1:]  # n, 4
+                    
                     x["labels"].append(
                         {
                             "im_file": im_file,
                             "shape": shape,
-                            "cls": lb[:, 0:1],  # n, 1
-                            "bboxes": lb[:, 1:],  # n, 4
+                            "cls": cls_data,
+                            "bboxes": bbox_data,
                             "segments": segments,
                             "keypoints": keypoint,
                             "normalized": True,

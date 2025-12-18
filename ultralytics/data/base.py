@@ -197,7 +197,16 @@ class BaseDataset(Dataset):
                 bboxes = self.labels[i]["bboxes"]
                 segments = self.labels[i]["segments"]
                 keypoints = self.labels[i]["keypoints"]
-                j = (cls == include_class_array).any(1)
+                
+                # Handle both single-label (Nx1) and multi-label (NxC) formats
+                if cls.shape[1] == 1:
+                    # Single-label: check if class ID is in include_class
+                    j = (cls == include_class_array).any(1)
+                else:
+                    # Multi-label: check if any of the active classes (where cls==1) are in include_class
+                    # For each instance, check if it has any of the included classes active
+                    j = cls[:, include_class].any(1)
+                
                 self.labels[i]["cls"] = cls[j]
                 self.labels[i]["bboxes"] = bboxes[j]
                 if segments:
@@ -205,7 +214,15 @@ class BaseDataset(Dataset):
                 if keypoints is not None:
                     self.labels[i]["keypoints"] = keypoints[j]
             if self.single_cls:
-                self.labels[i]["cls"][:, 0] = 0
+                cls = self.labels[i]["cls"]
+                if cls.shape[1] == 1:
+                    # Single-label format
+                    self.labels[i]["cls"][:, 0] = 0
+                else:
+                    # Multi-label format: set all instances to have only class 0 active
+                    self.labels[i]["cls"] = np.zeros_like(cls)
+                    if len(cls) > 0:
+                        self.labels[i]["cls"][:, 0] = 1
 
     def load_image(self, i: int, rect_mode: bool = True) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
         """Load an image from dataset index 'i'.

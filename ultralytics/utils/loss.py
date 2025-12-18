@@ -214,8 +214,15 @@ class v8DetectionLoss:
         self.bbox_loss = BboxLoss(m.reg_max).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
-    def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
-        """Preprocess targets by converting to tensor format and scaling coordinates."""
+    def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor, num_cls_cols: int = 1) -> torch.Tensor:
+        """Preprocess targets by converting to tensor format and scaling coordinates.
+        
+        Args:
+            targets: Target tensor with shape (N, 1 + num_cls_cols + 4) where columns are [batch_idx, cls..., bbox...]
+            batch_size: Batch size
+            scale_tensor: Tensor for scaling bbox coordinates
+            num_cls_cols: Number of class columns (1 for single-label, C for multi-label)
+        """
         nl, ne = targets.shape
         if nl == 0:
             out = torch.zeros(batch_size, 0, ne - 1, device=self.device)
@@ -228,7 +235,10 @@ class v8DetectionLoss:
                 matches = i == j
                 if n := matches.sum():
                     out[j, :n] = targets[matches, 1:]
-            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor))
+            # Scale bbox coordinates (after cls columns)
+            bbox_start = num_cls_cols
+            bbox_end = num_cls_cols + 4
+            out[..., bbox_start:bbox_end] = xywh2xyxy(out[..., bbox_start:bbox_end].mul_(scale_tensor))
         return out
 
     def bbox_decode(self, anchor_points: torch.Tensor, pred_dist: torch.Tensor) -> torch.Tensor:
@@ -257,9 +267,15 @@ class v8DetectionLoss:
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
         # Targets
-        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
-        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+        # Handle both single-label (N, 1) and multi-label (N, C) cls formats
+        cls_data = batch["cls"]
+        if cls_data.dim() == 1:
+            cls_data = cls_data.view(-1, 1)
+        num_cls_cols = cls_data.shape[1]
+        
+        targets = torch.cat((batch["batch_idx"].view(-1, 1), cls_data, batch["bboxes"]), 1)
+        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]], num_cls_cols=num_cls_cols)
+        gt_labels, gt_bboxes = targets.split((num_cls_cols, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
 
         # Pboxes
@@ -331,9 +347,15 @@ class v8SegmentationLoss(v8DetectionLoss):
         # Targets
         try:
             batch_idx = batch["batch_idx"].view(-1, 1)
-            targets = torch.cat((batch_idx, batch["cls"].view(-1, 1), batch["bboxes"]), 1)
-            targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-            gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+            # Handle both single-label (N, 1) and multi-label (N, C) cls formats
+            cls_data = batch["cls"]
+            if cls_data.dim() == 1:
+                cls_data = cls_data.view(-1, 1)
+            num_cls_cols = cls_data.shape[1]
+            
+            targets = torch.cat((batch_idx, cls_data, batch["bboxes"]), 1)
+            targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]], num_cls_cols=num_cls_cols)
+            gt_labels, gt_bboxes = targets.split((num_cls_cols, 4), 2)  # cls, xyxy
             mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
         except RuntimeError as e:
             raise TypeError(
@@ -516,9 +538,15 @@ class v8PoseLoss(v8DetectionLoss):
         # Targets
         batch_size = pred_scores.shape[0]
         batch_idx = batch["batch_idx"].view(-1, 1)
-        targets = torch.cat((batch_idx, batch["cls"].view(-1, 1), batch["bboxes"]), 1)
-        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+        # Handle both single-label (N, 1) and multi-label (N, C) cls formats
+        cls_data = batch["cls"]
+        if cls_data.dim() == 1:
+            cls_data = cls_data.view(-1, 1)
+        num_cls_cols = cls_data.shape[1]
+        
+        targets = torch.cat((batch_idx, cls_data, batch["bboxes"]), 1)
+        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]], num_cls_cols=num_cls_cols)
+        gt_labels, gt_bboxes = targets.split((num_cls_cols, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
 
         # Pboxes
@@ -663,21 +691,30 @@ class v8OBBLoss(v8DetectionLoss):
         self.assigner = RotatedTaskAlignedAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = RotatedBboxLoss(self.reg_max).to(self.device)
 
-    def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
-        """Preprocess targets for oriented bounding box detection."""
+    def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor, num_cls_cols: int = 1) -> torch.Tensor:
+        """Preprocess targets for oriented bounding box detection.
+        
+        Args:
+            targets: Target tensor with shape (N, 1 + num_cls_cols + 5) where columns are [batch_idx, cls..., bbox(5)]
+            batch_size: Batch size
+            scale_tensor: Tensor for scaling bbox coordinates
+            num_cls_cols: Number of class columns (1 for single-label, C for multi-label)
+        """
         if targets.shape[0] == 0:
-            out = torch.zeros(batch_size, 0, 6, device=self.device)
+            out = torch.zeros(batch_size, 0, num_cls_cols + 5, device=self.device)
         else:
             i = targets[:, 0]  # image index
             _, counts = i.unique(return_counts=True)
             counts = counts.to(dtype=torch.int32)
-            out = torch.zeros(batch_size, counts.max(), 6, device=self.device)
+            out = torch.zeros(batch_size, counts.max(), num_cls_cols + 5, device=self.device)
             for j in range(batch_size):
                 matches = i == j
                 if n := matches.sum():
-                    bboxes = targets[matches, 2:]
+                    # Extract cls and bboxes (5 coords for OBB)
+                    cls_bboxes = targets[matches, 1:]  # Skip batch_idx
+                    bboxes = cls_bboxes[:, num_cls_cols:]  # Get bbox coords (last 5 columns)
                     bboxes[..., :4].mul_(scale_tensor)
-                    out[j, :n] = torch.cat([targets[matches, 1:2], bboxes], dim=-1)
+                    out[j, :n] = torch.cat([cls_bboxes[:, :num_cls_cols], bboxes], dim=-1)
         return out
 
     def __call__(self, preds: Any, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -701,11 +738,20 @@ class v8OBBLoss(v8DetectionLoss):
         # targets
         try:
             batch_idx = batch["batch_idx"].view(-1, 1)
-            targets = torch.cat((batch_idx, batch["cls"].view(-1, 1), batch["bboxes"].view(-1, 5)), 1)
-            rw, rh = targets[:, 4] * imgsz[0].item(), targets[:, 5] * imgsz[1].item()
+            # Handle both single-label (N, 1) and multi-label (N, C) cls formats
+            cls_data = batch["cls"]
+            if cls_data.dim() == 1:
+                cls_data = cls_data.view(-1, 1)
+            num_cls_cols = cls_data.shape[1]
+            
+            targets = torch.cat((batch_idx, cls_data, batch["bboxes"].view(-1, 5)), 1)
+            # Filter based on bbox dimensions (after batch_idx and cls columns)
+            rw_col = 1 + num_cls_cols + 2  # batch_idx + cls_cols + x + y + w
+            rh_col = 1 + num_cls_cols + 3  # batch_idx + cls_cols + x + y + h
+            rw, rh = targets[:, rw_col] * imgsz[0].item(), targets[:, rh_col] * imgsz[1].item()
             targets = targets[(rw >= 2) & (rh >= 2)]  # filter rboxes of tiny size to stabilize training
-            targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-            gt_labels, gt_bboxes = targets.split((1, 5), 2)  # cls, xywhr
+            targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]], num_cls_cols=num_cls_cols)
+            gt_labels, gt_bboxes = targets.split((num_cls_cols, 5), 2)  # cls, xywhr
             mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
         except RuntimeError as e:
             raise TypeError(

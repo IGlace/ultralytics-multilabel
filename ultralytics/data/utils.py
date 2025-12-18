@@ -212,18 +212,32 @@ def verify_image_label(args: tuple) -> list:
                     assert lb.shape[1] == (5 + nkpt * ndim), f"labels require {(5 + nkpt * ndim)} columns each"
                     points = lb[:, 5:].reshape(-1, ndim)[:, :2]
                 else:
-                    assert lb.shape[1] == 5, f"labels require 5 columns, {lb.shape[1]} columns detected"
-                    points = lb[:, 1:]
+                    # Support multi-label: check if first column has num_cls values (multi-hot) or single class
+                    if lb.shape[1] == (num_cls + 4):  # Multi-hot format: [cls_0, cls_1, ..., cls_N-1, x, y, w, h]
+                        # Multi-label format detected
+                        points = lb[:, num_cls:]  # bbox coordinates
+                    else:
+                        assert lb.shape[1] == 5, f"labels require 5 columns (single-label) or {num_cls + 4} columns (multi-label), {lb.shape[1]} columns detected"
+                        points = lb[:, 1:]
                 # Coordinate points check with 1% tolerance
                 assert points.max() <= 1.01, f"non-normalized or out of bounds coordinates {points[points > 1.01]}"
-                assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
-
-                # All labels
-                max_cls = 0 if single_cls else lb[:, 0].max()  # max label count
-                assert max_cls < num_cls, (
-                    f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
-                    f"Possible class labels are 0-{num_cls - 1}"
-                )
+                
+                # Validate class labels
+                if lb.shape[1] == (num_cls + 4):  # Multi-label format
+                    # Check that first num_cls columns are binary (0 or 1)
+                    cls_cols = lb[:, :num_cls]
+                    assert np.all((cls_cols == 0) | (cls_cols == 1)), "multi-label classes must be binary (0 or 1)"
+                    # Check that each instance has at least one class
+                    assert np.all(cls_cols.sum(axis=1) > 0), "each instance must have at least one class label"
+                else:  # Single-label format
+                    assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
+                    # All labels
+                    max_cls = 0 if single_cls else lb[:, 0].max()  # max label count
+                    assert max_cls < num_cls, (
+                        f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
+                        f"Possible class labels are 0-{num_cls - 1}"
+                    )
+                
                 _, i = np.unique(lb, axis=0, return_index=True)
                 if len(i) < nl:  # duplicate row check
                     lb = lb[i]  # remove duplicates
@@ -232,16 +246,20 @@ def verify_image_label(args: tuple) -> list:
                     msg = f"{prefix}{im_file}: {nl - len(i)} duplicate labels removed"
             else:
                 ne = 1  # label empty
-                lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+                lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else (num_cls + 4)), dtype=np.float32)
         else:
             nm = 1  # label missing
-            lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+            lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else (num_cls + 4)), dtype=np.float32)
         if keypoint:
             keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
             if ndim == 2:
                 kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
                 keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
-        lb = lb[:, :5]
+        # Keep only first num_cls+4 columns for multi-label or 5 for single-label
+        if not keypoint:
+            lb = lb[:, :(num_cls + 4)] if lb.shape[1] == (num_cls + 4) else lb[:, :5]
+        else:
+            lb = lb[:, :5]
         return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
     except Exception as e:
         nc = 1
@@ -696,12 +714,20 @@ class HUBDatasetStats:
                 from ultralytics.data import YOLODataset
 
                 dataset = YOLODataset(img_path=self.data[split], data=self.data, task=self.task)
-                x = np.array(
-                    [
-                        np.bincount(label["cls"].astype(int).flatten(), minlength=self.data["nc"])
-                        for label in TQDM(dataset.labels, total=len(dataset), desc="Statistics")
-                    ]
-                )  # shape(128x80)
+                x = []
+                for label in TQDM(dataset.labels, total=len(dataset), desc="Statistics"):
+                    cls = label["cls"].astype(int)
+                    if cls.shape[1] == 1:
+                        # Single-label format: use bincount
+                        counts = np.bincount(cls.flatten(), minlength=self.data["nc"])
+                    else:
+                        # Multi-label format: sum multi-hot vectors
+                        counts = cls.sum(axis=0)
+                        # Pad to nc if needed
+                        if len(counts) < self.data["nc"]:
+                            counts = np.pad(counts, (0, self.data["nc"] - len(counts)))
+                    x.append(counts)
+                x = np.array(x)  # shape(128x80)
                 self.stats[split] = {
                     "instance_stats": {"total": int(x.sum()), "per_class": x.sum(0).tolist()},
                     "image_stats": {

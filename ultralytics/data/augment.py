@@ -2068,7 +2068,13 @@ class Format:
                 )
             labels["masks"] = masks
         labels["img"] = self._format_img(img)
-        labels["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl, 1)
+        # Handle both single-label (Nx1) and multi-label (NxC) formats
+        if nl:
+            labels["cls"] = torch.from_numpy(cls)
+        else:
+            # Determine shape based on cls structure (single-label: Nx1, multi-label: NxC)
+            cls_shape = (0, cls.shape[1]) if len(cls.shape) > 1 and cls.shape[1] > 1 else (0, 1)
+            labels["cls"] = torch.zeros(cls_shape)
         labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
         if self.return_keypoint:
             labels["keypoints"] = (
