@@ -197,10 +197,7 @@ class BaseDataset(Dataset):
                 bboxes = self.labels[i]["bboxes"]
                 segments = self.labels[i]["segments"]
                 keypoints = self.labels[i]["keypoints"]
-                if cls.ndim == 1 or cls.shape[1] == 1:
-                    j = (cls == include_class_array).any(1)
-                else:
-                    j = (cls[:, include_class_array.flatten()]).any(1)
+                j = (cls == include_class_array).any(1)
                 self.labels[i]["cls"] = cls[j]
                 self.labels[i]["bboxes"] = bboxes[j]
                 if segments:
@@ -208,12 +205,7 @@ class BaseDataset(Dataset):
                 if keypoints is not None:
                     self.labels[i]["keypoints"] = keypoints[j]
             if self.single_cls:
-                if self.labels[i]["cls"].ndim == 1 or self.labels[i]["cls"].shape[1] == 1:
-                    self.labels[i]["cls"][:, 0] = 0
-                else:
-                    self.labels[i]["cls"] = np.zeros_like(self.labels[i]["cls"])
-                    if self.labels[i]["cls"].shape[0]:
-                        self.labels[i]["cls"][:, 0] = 1
+                self.labels[i]["cls"][:, 0] = 0
 
     def load_image(self, i: int, rect_mode: bool = True) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
         """Load an image from dataset index 'i'.
