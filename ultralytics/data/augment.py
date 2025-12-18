@@ -453,6 +453,15 @@ class BaseMixTransform:
                 cls_indices = cls_tensor.argmax(-1)
             else:
                 cls_indices = cls_tensor.squeeze(-1)
+            
+            # Expand cls_tensor to accommodate all classes in mix_texts if needed
+            n_samples = len(cls_indices)
+            n_classes = len(mix_texts)
+            if cls_tensor.ndim == 1 or cls_tensor.shape[-1] < n_classes:
+                # Create new tensor with correct shape and transfer to same device
+                new_cls_tensor = torch.zeros((n_samples, n_classes), dtype=cls_tensor.dtype, device=cls_tensor.device)
+                cls_tensor = new_cls_tensor
+            
             for i, cls_val in enumerate(cls_indices.tolist()):
                 text = label["texts"][int(cls_val)]
                 cls_tensor[i] = 0
