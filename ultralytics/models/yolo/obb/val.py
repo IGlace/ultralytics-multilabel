@@ -126,20 +126,11 @@ class OBBValidator(DetectionValidator):
             (dict[str, Any]): Prepared batch data with scaled bounding boxes and metadata.
         """
         idx = batch["batch_idx"] == si
-        cls_targets = batch["cls"][idx]
+        cls = batch["cls"][idx]
+        # Only squeeze if single-label format (shape: N, 1), keep multi-label format (shape: N, C)
+        if cls.ndim > 1 and cls.shape[1] == 1:
+            cls = cls.squeeze(-1)
         bbox = batch["bboxes"][idx]
-        if cls_targets.ndim > 1 and cls_targets.shape[1] > 1:
-            cls_list, bbox_list = [], []
-            for c_vec, b in zip(cls_targets, bbox):
-                pos = torch.nonzero(c_vec).flatten()
-                if len(pos) == 0:
-                    continue
-                cls_list.extend(pos)
-                bbox_list.extend([b] * len(pos))
-            cls = torch.tensor(cls_list, device=cls_targets.device)
-            bbox = torch.stack(bbox_list) if bbox_list else bbox.new_zeros((0, bbox.shape[-1]))
-        else:
-            cls = cls_targets.squeeze(-1)
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
         ratio_pad = batch["ratio_pad"][si]

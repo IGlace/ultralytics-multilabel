@@ -270,8 +270,8 @@ class BaseValidator:
 
         Args:
             pred_classes (torch.Tensor): Predicted class indices of shape (N,).
-            true_classes (torch.Tensor): Target class indices of shape (M,).
-            iou (torch.Tensor): An NxM tensor containing the pairwise IoU values for predictions and ground truth.
+            true_classes (torch.Tensor): Target class indices of shape (M,) for single-label or (M, C) for multi-label.
+            iou (torch.Tensor): An MxN tensor containing the pairwise IoU values for predictions and ground truth.
             use_scipy (bool, optional): Whether to use scipy for matching (more precise).
 
         Returns:
@@ -279,8 +279,19 @@ class BaseValidator:
         """
         # Dx10 matrix, where D - detections, 10 - IoU thresholds
         correct = np.zeros((pred_classes.shape[0], self.iouv.shape[0])).astype(bool)
+        
         # LxD matrix where L - labels (rows), D - detections (columns)
-        correct_class = true_classes[:, None] == pred_classes
+        if true_classes.ndim > 1 and true_classes.shape[1] > 1:
+            # Multi-label format: true_classes is (M, C) multi-hot
+            # For each ground truth, check if any of its active classes match the prediction
+            # pred_classes: (N,), true_classes: (M, C)
+            # correct_class[m, n] = 1 if pred_classes[n] is active in true_classes[m]
+            pred_classes_int = pred_classes.long()
+            correct_class = true_classes[:, None].gather(dim=-1, index=pred_classes_int[None, :, None]).squeeze(-1)  # (M, N)
+        else:
+            # Single-label format
+            correct_class = true_classes[:, None] == pred_classes
+        
         iou = iou * correct_class  # zero out the wrong classes
         iou = iou.cpu().numpy()
         for i, threshold in enumerate(self.iouv.cpu().tolist()):

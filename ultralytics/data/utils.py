@@ -182,7 +182,6 @@ def verify_image_label(args: tuple) -> list:
     im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, single_cls = args
     # Number (missing, found, empty, corrupt), message, segments, keypoints
     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
-    cls_multi = []
     try:
         # Verify images
         im = Image.open(im_file)
@@ -202,70 +201,71 @@ def verify_image_label(args: tuple) -> list:
         if os.path.isfile(lb_file):
             nf = 1  # label found
             with open(lb_file, encoding="utf-8") as f:
-                raw_labels = [x.split() for x in f.read().strip().splitlines() if len(x)]
-                if any(len(x) > 6 for x in raw_labels) and (not keypoint):  # is segment
-                    classes = np.array([x[0] for x in raw_labels], dtype=np.float32)
-                    segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in raw_labels]  # (cls, xy1...)
+                lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                # Check for segment data, excluding multi-label detection format (num_cls + 4 values)
+                if any(len(x) > 6 and len(x) != num_cls + 4 for x in lb) and (not keypoint):  # is segment
+                    classes = np.array([x[0] for x in lb], dtype=np.float32)
+                    segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
                     lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
-                    cls_multi = [[int(c)] for c in classes]
-                else:
-                    boxes, cls_multi = [], []
-                    for entry in raw_labels:
-                        class_token, *coords = entry
-                        class_ids = [int(c) for c in class_token.split(",") if c != ""]
-                        class_ids = sorted(set(class_ids))
-                        cls_multi.append(class_ids)
-                        if len(coords) != 4:
-                            raise AssertionError(f"labels require 4 box coordinates, {len(coords)} values found")
-                        boxes.append(coords)
-                    lb = np.array(boxes, dtype=np.float32)
+                lb = np.array(lb, dtype=np.float32)
             if nl := len(lb):
-                if not cls_multi:
-                    cls_multi = [[int(row[0])] for row in lb]
                 if keypoint:
                     assert lb.shape[1] == (5 + nkpt * ndim), f"labels require {(5 + nkpt * ndim)} columns each"
                     points = lb[:, 5:].reshape(-1, ndim)[:, :2]
                 else:
-                    assert lb.shape[1] == 5, f"labels require 5 columns, {lb.shape[1]} columns detected"
-                    points = lb[:, 1:]
+                    # Support multi-label: check if first column has num_cls values (multi-hot) or single class
+                    if lb.shape[1] == (num_cls + 4):  # Multi-hot format: [cls_0, cls_1, ..., cls_N-1, x, y, w, h]
+                        # Multi-label format detected
+                        points = lb[:, num_cls:]  # bbox coordinates
+                    else:
+                        assert lb.shape[1] == 5, f"labels require 5 columns (single-label) or {num_cls + 4} columns (multi-label), {lb.shape[1]} columns detected"
+                        points = lb[:, 1:]
                 # Coordinate points check with 1% tolerance
                 assert points.max() <= 1.01, f"non-normalized or out of bounds coordinates {points[points > 1.01]}"
-                assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
-
-                # All labels
-                max_cls = 0 if single_cls else max((max(c) if len(c) else 0) for c in cls_multi)
-                assert max_cls < num_cls, (
-                    f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
-                    f"Possible class labels are 0-{num_cls - 1}"
-                )
-                cls_multi = [c if c else [0] for c in cls_multi]
-                lb = np.concatenate((np.array([c[0] for c in cls_multi], dtype=np.float32).reshape(-1, 1), lb), 1)
+                
+                # Validate class labels
+                if lb.shape[1] == (num_cls + 4):  # Multi-label format
+                    # Check that first num_cls columns are binary (0 or 1)
+                    cls_cols = lb[:, :num_cls]
+                    assert np.all((cls_cols == 0) | (cls_cols == 1)), "multi-label classes must be binary (0 or 1)"
+                    # Check that each instance has at least one class
+                    assert np.all(cls_cols.sum(axis=1) > 0), "each instance must have at least one class label"
+                else:  # Single-label format
+                    assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
+                    # All labels
+                    max_cls = 0 if single_cls else lb[:, 0].max()  # max label count
+                    assert max_cls < num_cls, (
+                        f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
+                        f"Possible class labels are 0-{num_cls - 1}"
+                    )
+                
                 _, i = np.unique(lb, axis=0, return_index=True)
                 if len(i) < nl:  # duplicate row check
                     lb = lb[i]  # remove duplicates
-                    cls_multi = [cls_multi[x] for x in i]
                     if segments:
                         segments = [segments[x] for x in i]
                     msg = f"{prefix}{im_file}: {nl - len(i)} duplicate labels removed"
             else:
                 ne = 1  # label empty
                 lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
-                cls_multi = []
         else:
             nm = 1  # label missing
             lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
-            cls_multi = []
         if keypoint:
             keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
             if ndim == 2:
                 kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
                 keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
-        lb = lb[:, :5]
-        return im_file, lb, cls_multi, shape, segments, keypoints, nm, nf, ne, nc, msg
+        # Keep only first num_cls+4 columns for multi-label or 5 for single-label
+        if not keypoint:
+            lb = lb[:, :(num_cls + 4)] if lb.shape[1] == (num_cls + 4) else lb[:, :5]
+        else:
+            lb = lb[:, :5]
+        return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
     except Exception as e:
         nc = 1
         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
-        return [None, None, None, None, None, None, nm, nf, ne, nc, msg]
+        return [None, None, None, None, None, nm, nf, ne, nc, msg]
 
 
 def visualize_image_annotations(image_path: str, txt_path: str, label_map: dict[int, str]):
@@ -683,11 +683,13 @@ class HUBDatasetStats:
             else:
                 raise ValueError(f"Undefined dataset task={self.task}.")
             zipped = zip(labels["cls"], coordinates)
-            rounded = []
-            for c, points in zipped:
-                cls_list = np.nonzero(c)[0].tolist() if c.ndim > 0 else [int(c)]
-                rounded.append([cls_list, *(round(float(x), 4) for x in points)])
-            return rounded
+            # Handle both single-label and multi-label formats
+            # Single-label: c is [class_id], use int(c[0])
+            # Multi-label: c is [1,0,1,0,...], extract indices using np.nonzero
+            return [
+                [int(c[0]) if len(c) == 1 else np.nonzero(c)[0].tolist(), *(round(float(x), 4) for x in points)]
+                for c, points in zipped
+            ]
 
         for split in "train", "val", "test":
             self.stats[split] = None  # predefine
@@ -719,12 +721,20 @@ class HUBDatasetStats:
                 from ultralytics.data import YOLODataset
 
                 dataset = YOLODataset(img_path=self.data[split], data=self.data, task=self.task)
-                x = np.array(
-                    [
-                        np.bincount(np.nonzero(label["cls"])[1], minlength=self.data["nc"])
-                        for label in TQDM(dataset.labels, total=len(dataset), desc="Statistics")
-                    ]
-                )  # shape(128x80)
+                x = []
+                for label in TQDM(dataset.labels, total=len(dataset), desc="Statistics"):
+                    cls = label["cls"].astype(int)
+                    if cls.shape[1] == 1:
+                        # Single-label format: use bincount
+                        counts = np.bincount(cls.flatten(), minlength=self.data["nc"])
+                    else:
+                        # Multi-label format: sum multi-hot vectors
+                        counts = cls.sum(axis=0)
+                        # Pad to nc if needed
+                        if len(counts) < self.data["nc"]:
+                            counts = np.pad(counts, (0, self.data["nc"] - len(counts)))
+                    x.append(counts)
+                x = np.array(x)  # shape(128x80)
                 self.stats[split] = {
                     "instance_stats": {"total": int(x.sum()), "per_class": x.sum(0).tolist()},
                     "image_stats": {

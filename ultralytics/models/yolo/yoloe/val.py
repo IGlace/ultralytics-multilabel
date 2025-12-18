@@ -71,12 +71,8 @@ class YOLOEDetectValidator(DetectionValidator):
 
         # Count samples per class
         for batch in dataloader:
-            cls_tensor = batch["cls"]
-            if cls_tensor.ndim > 1 and cls_tensor.shape[-1] > 1:
-                cls_indices = torch.nonzero(cls_tensor)[:, 1]
-            else:
-                cls_indices = cls_tensor.squeeze(-1).to(torch.int)
-            count = torch.bincount(cls_indices, minlength=len(names))
+            cls = batch["cls"].flatten().to(torch.int)
+            count = torch.bincount(cls, minlength=len(names))
             cls_visual_num += count
 
         cls_visual_num = cls_visual_num.to(self.device)
@@ -89,12 +85,7 @@ class YOLOEDetectValidator(DetectionValidator):
 
             batch_idx = batch["batch_idx"]
             for i in range(preds.shape[0]):
-                cls_targets = batch["cls"][batch_idx == i]
-                if cls_targets.ndim > 1 and cls_targets.shape[-1] > 1:
-                    cls = torch.nonzero(cls_targets)[:, 1]
-                else:
-                    cls = cls_targets.squeeze(-1).to(torch.int)
-                cls = cls.unique(sorted=True)
+                cls = batch["cls"][batch_idx == i].flatten().to(torch.int).unique(sorted=True)
                 pad_cls = torch.ones(preds.shape[1], device=self.device) * -1
                 pad_cls[: cls.shape[0]] = cls
                 for c in cls:

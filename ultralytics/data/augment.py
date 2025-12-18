@@ -448,25 +448,21 @@ class BaseMixTransform:
         text2id = {text: i for i, text in enumerate(mix_texts)}
 
         for label in [labels] + labels["mix_labels"]:
-            cls_tensor = label["cls"]
-            if cls_tensor.ndim > 1 and cls_tensor.shape[-1] > 1:
-                cls_indices = cls_tensor.argmax(-1)
+            cls_array = label["cls"]
+            # Handle both single-label (N, 1) and multi-label (N, C) formats
+            if hasattr(cls_array, "ndim") and cls_array.ndim > 1 and cls_array.shape[1] > 1:
+                # Multi-label format: convert multi-hot to class indices using argmax
+                if isinstance(cls_array, torch.Tensor):
+                    cls_list = cls_array.argmax(dim=1).tolist()
+                else:
+                    cls_list = cls_array.argmax(axis=1).tolist()
             else:
-                cls_indices = cls_tensor.squeeze(-1)
+                # Single-label format: squeeze and convert to list
+                cls_list = cls_array.squeeze(-1).tolist()
             
-            # Expand cls_tensor to accommodate all classes in mix_texts if needed
-            n_samples = len(cls_indices)
-            n_classes = len(mix_texts)
-            if cls_tensor.ndim == 1 or cls_tensor.shape[-1] < n_classes:
-                # Create new tensor with correct shape and transfer to same device
-                new_cls_tensor = torch.zeros((n_samples, n_classes), dtype=cls_tensor.dtype, device=cls_tensor.device)
-                cls_tensor = new_cls_tensor
-            
-            for i, cls_val in enumerate(cls_indices.tolist()):
-                text = label["texts"][int(cls_val)]
-                cls_tensor[i] = 0
-                cls_tensor[i, text2id[tuple(text)]] = 1
-            label["cls"] = cls_tensor
+            for i, cls in enumerate(cls_list):
+                text = label["texts"][int(cls)]
+                label["cls"][i] = text2id[tuple(text)]
             label["texts"] = mix_texts
         return labels
 
@@ -2084,14 +2080,14 @@ class Format:
                 )
             labels["masks"] = masks
         labels["img"] = self._format_img(img)
-        cls_tensor = torch.from_numpy(cls) if isinstance(cls, np.ndarray) else cls
+        # Handle both single-label (Nx1) and multi-label (NxC) formats
         if nl:
-            labels["cls"] = cls_tensor
-            labels["bboxes"] = torch.from_numpy(instances.bboxes)
+            labels["cls"] = torch.from_numpy(cls)
         else:
-            cls_dim = cls.shape[1] if hasattr(cls, "shape") and getattr(cls, "ndim", 1) > 1 else 1
-            labels["cls"] = torch.zeros((nl, cls_dim), dtype=cls_tensor.dtype if hasattr(cls_tensor, "dtype") else torch.float32)
-            labels["bboxes"] = torch.zeros((nl, 4))
+            # Determine shape based on cls structure (single-label: Nx1, multi-label: NxC)
+            cls_shape = (0, cls.shape[1]) if len(cls.shape) > 1 and cls.shape[1] > 1 else (0, 1)
+            labels["cls"] = torch.zeros(cls_shape)
+        labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
         if self.return_keypoint:
             labels["keypoints"] = (
                 torch.empty(0, 3) if instances.keypoints is None else torch.from_numpy(instances.keypoints)
@@ -2218,12 +2214,14 @@ class LoadVisualPrompt:
             bboxes = labels["bboxes"]
             bboxes = xywh2xyxy(bboxes) * torch.tensor(imgsz)[[1, 0, 1, 0]]  # denormalize boxes
 
+        # Handle both single-label (N, 1) and multi-label (N, C) formats
         cls_tensor = labels["cls"]
-        if cls_tensor.ndim > 1 and cls_tensor.shape[-1] > 1:
-            cls = cls_tensor.argmax(-1)
+        if cls_tensor.ndim > 1 and cls_tensor.shape[1] > 1:
+            # Multi-label format: convert multi-hot to class indices using argmax
+            cls = cls_tensor.argmax(dim=1).to(torch.int)
         else:
-            cls = cls_tensor.squeeze(-1)
-        cls = cls.to(torch.int)
+            # Single-label format: squeeze and convert to int
+            cls = cls_tensor.squeeze(-1).to(torch.int)
         visuals = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
         labels["visuals"] = visuals
         return labels
@@ -2368,7 +2366,15 @@ class RandomLoadText:
         label2ids = {label: i for i, label in enumerate(sampled_labels)}
         valid_idx = np.zeros(len(labels["instances"]), dtype=bool)
         new_cls = []
-        for i, label in enumerate(cls.squeeze(-1).tolist()):
+        # Handle both single-label (N, 1) and multi-label (N, C) formats
+        if cls.ndim > 1 and cls.shape[1] > 1:
+            # Multi-label format: convert multi-hot to class indices using argmax
+            cls_list = cls.argmax(axis=1).tolist()
+        else:
+            # Single-label format: squeeze and convert to list
+            cls_list = cls.squeeze(-1).tolist()
+        
+        for i, label in enumerate(cls_list):
             if label not in label2ids:
                 continue
             valid_idx[i] = True
