@@ -682,7 +682,13 @@ class HUBDatasetStats:
             else:
                 raise ValueError(f"Undefined dataset task={self.task}.")
             zipped = zip(labels["cls"], coordinates)
-            return [[int(c[0]), *(round(float(x), 4) for x in points)] for c, points in zipped]
+            # Handle both single-label and multi-label formats
+            # Single-label: c is [class_id], use int(c[0])
+            # Multi-label: c is [1,0,1,0,...], extract indices using np.nonzero
+            return [
+                [int(c[0]) if len(c) == 1 else np.nonzero(c)[0].tolist(), *(round(float(x), 4) for x in points)]
+                for c, points in zipped
+            ]
 
         for split in "train", "val", "test":
             self.stats[split] = None  # predefine
