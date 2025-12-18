@@ -448,9 +448,25 @@ class BaseMixTransform:
         text2id = {text: i for i, text in enumerate(mix_texts)}
 
         for label in [labels] + labels["mix_labels"]:
-            for i, cls in enumerate(label["cls"].squeeze(-1).tolist()):
-                text = label["texts"][int(cls)]
-                label["cls"][i] = text2id[tuple(text)]
+            cls_tensor = label["cls"]
+            if cls_tensor.ndim > 1 and cls_tensor.shape[-1] > 1:
+                cls_indices = cls_tensor.argmax(-1)
+            else:
+                cls_indices = cls_tensor.squeeze(-1)
+            
+            # Expand cls_tensor to accommodate all classes in mix_texts if needed
+            n_samples = len(cls_indices)
+            n_classes = len(mix_texts)
+            if cls_tensor.ndim == 1 or cls_tensor.shape[-1] < n_classes:
+                # Create new tensor with correct shape and transfer to same device
+                new_cls_tensor = torch.zeros((n_samples, n_classes), dtype=cls_tensor.dtype, device=cls_tensor.device)
+                cls_tensor = new_cls_tensor
+            
+            for i, cls_val in enumerate(cls_indices.tolist()):
+                text = label["texts"][int(cls_val)]
+                cls_tensor[i] = 0
+                cls_tensor[i, text2id[tuple(text)]] = 1
+            label["cls"] = cls_tensor
             label["texts"] = mix_texts
         return labels
 
@@ -2068,8 +2084,14 @@ class Format:
                 )
             labels["masks"] = masks
         labels["img"] = self._format_img(img)
-        labels["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl, 1)
-        labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
+        cls_tensor = torch.from_numpy(cls) if isinstance(cls, np.ndarray) else cls
+        if nl:
+            labels["cls"] = cls_tensor
+            labels["bboxes"] = torch.from_numpy(instances.bboxes)
+        else:
+            cls_dim = cls.shape[1] if hasattr(cls, "shape") and getattr(cls, "ndim", 1) > 1 else 1
+            labels["cls"] = torch.zeros((nl, cls_dim), dtype=cls_tensor.dtype if hasattr(cls_tensor, "dtype") else torch.float32)
+            labels["bboxes"] = torch.zeros((nl, 4))
         if self.return_keypoint:
             labels["keypoints"] = (
                 torch.empty(0, 3) if instances.keypoints is None else torch.from_numpy(instances.keypoints)
@@ -2196,7 +2218,12 @@ class LoadVisualPrompt:
             bboxes = labels["bboxes"]
             bboxes = xywh2xyxy(bboxes) * torch.tensor(imgsz)[[1, 0, 1, 0]]  # denormalize boxes
 
-        cls = labels["cls"].squeeze(-1).to(torch.int)
+        cls_tensor = labels["cls"]
+        if cls_tensor.ndim > 1 and cls_tensor.shape[-1] > 1:
+            cls = cls_tensor.argmax(-1)
+        else:
+            cls = cls_tensor.squeeze(-1)
+        cls = cls.to(torch.int)
         visuals = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
         labels["visuals"] = visuals
         return labels

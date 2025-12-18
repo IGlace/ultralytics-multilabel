@@ -121,17 +121,21 @@ class YOLODataset(BaseDataset):
                 ),
             )
             pbar = TQDM(results, desc=desc, total=total)
-            for im_file, lb, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+            for im_file, lb, cls_multi, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
                 nm += nm_f
                 nf += nf_f
                 ne += ne_f
                 nc += nc_f
                 if im_file:
+                    num_cls = len(self.data["names"])
+                    cls_tensor = np.zeros((len(cls_multi), num_cls), dtype=np.float32)
+                    for j, cls_ids in enumerate(cls_multi):
+                        cls_tensor[j, [int(c) for c in cls_ids]] = 1.0
                     x["labels"].append(
                         {
                             "im_file": im_file,
                             "shape": shape,
-                            "cls": lb[:, 0:1],  # n, 1
+                            "cls": cls_tensor,  # n, num_classes
                             "bboxes": lb[:, 1:],  # n, 4
                             "segments": segments,
                             "keypoints": keypoint,
@@ -390,11 +394,10 @@ class YOLOMultiModalDataset(YOLODataset):
         texts = [v.split("/") for v in self.data["names"].values()]
         category_freq = defaultdict(int)
         for label in self.labels:
-            for c in label["cls"].squeeze(-1):  # to check
-                text = texts[int(c)]
-                for t in text:
-                    t = t.strip()
-                    category_freq[t] += 1
+            cls_indices = np.nonzero(label["cls"])[1] if label["cls"].size else []
+            for c in cls_indices:
+                for t in texts[int(c)]:
+                    category_freq[t.strip()] += 1
         return category_freq
 
     @staticmethod
