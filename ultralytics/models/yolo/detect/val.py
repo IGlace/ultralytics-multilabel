@@ -136,8 +136,20 @@ class DetectionValidator(BaseValidator):
             (dict[str, Any]): Prepared batch with processed annotations.
         """
         idx = batch["batch_idx"] == si
-        cls = batch["cls"][idx].squeeze(-1)
+        cls_targets = batch["cls"][idx]
         bbox = batch["bboxes"][idx]
+        if cls_targets.ndim > 1 and cls_targets.shape[1] > 1:
+            cls_list, bbox_list = [], []
+            for c_vec, b in zip(cls_targets, bbox):
+                pos = torch.nonzero(c_vec).flatten()
+                if len(pos) == 0:
+                    continue
+                cls_list.extend(pos)
+                bbox_list.extend([b] * len(pos))
+            cls = torch.tensor(cls_list, device=cls_targets.device)
+            bbox = torch.stack(bbox_list) if bbox_list else bbox.new_zeros((0, 4))
+        else:
+            cls = cls_targets.squeeze(-1)
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
         ratio_pad = batch["ratio_pad"][si]

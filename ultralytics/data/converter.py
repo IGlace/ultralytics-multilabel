@@ -633,8 +633,10 @@ def yolo_bbox2segment(im_dir: str | Path, save_dir: str | Path | None = None, sa
         for i, s in enumerate(label["segments"]):
             if len(s) == 0:
                 continue
-            line = (int(cls[i]), *s.reshape(-1))
-            texts.append(("%g " * len(line)).rstrip() % line)
+            cls_ids = np.nonzero(cls[i])[0]
+            cls_repr = ",".join(map(str, cls_ids.tolist())) if len(cls_ids) else "0"
+            coords = " ".join(f"{float(x):g}" for x in s.reshape(-1))
+            texts.append(f"{cls_repr} {coords}")
         with open(txt_file, "a", encoding="utf-8") as f:
             f.writelines(text + "\n" for text in texts)
     LOGGER.info(f"Generated segment labels saved in {save_dir}")
